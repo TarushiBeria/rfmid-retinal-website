@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFMiD Retinal Image Research Tool</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 850px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.6;
+      color: #202938;
+      background: #f6f8fb;
+    }
+
+    .panel {
+      background: white;
+      border: 1px solid #dce2ea;
+      border-radius: 14px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    /* Make sure the hidden attribute always wins, even when
+       a rule below sets display on the same element. */
+    [hidden] {
+      display: none !important;
+    }
+
+    h1 { margin-bottom: 8px; }
+    .muted { color: #64748b; }
+
+    button {
+      background: #2459a9;
+      color: white;
+      border: 0;
+      padding: 12px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+
+    /* Disabled because no valid file is selected yet */
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    /* Disabled because a request is actually running */
+    button.loading:disabled {
+      cursor: progress;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      max-height: 320px;
+      margin-top: 16px;
+      border-radius: 8px;
+    }
+
+    .result {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 12px 0;
+    }
+
+    .bar {
+      height: 8px;
+      background: #e2e8f0;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 5px;
+    }
+
+    .fill {
+      height: 100%;
+      background: #3974c6;
+    }
+
+    #status { white-space: pre-wrap; }
+  </style>
+</head>
+
+<body>
+  <h1>RFMiD Retinal Image Classifier</h1>
+  <p class="muted">
+    Cloud-based demonstration of a trained retinal-image ML model.
+  </p>
+
+  <section class="panel">
+    <h2>Upload an image</h2>
+    <p>Select a JPEG, PNG or WebP retinal image, up to 10 MB.</p>
+
+    <input
+      id="imageInput"
+      type="file"
+      accept="image/jpeg,image/png,image/webp"
+    >
+
+    <img id="preview" alt="Selected retinal image preview" hidden>
+
+    <p>
+      <button id="predictButton" type="button" disabled>
+        Predict
+      </button>
+    </p>
+
+    <p id="statusMessage" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="panel" id="resultsPanel" hidden>
+    <h2>Prediction results</h2>
+    <p class="muted">
+      Scores are model outputs, not confirmed diagnoses.
+    </p>
+    <div id="results"></div>
+  </section>
+
+  <section class="panel">
+    <strong>Research disclaimer</strong>
+    <p>
+      This tool is for educational and research use only.
+      It is not a medical diagnostic device and must not be
+      used to make treatment decisions.
+    </p>
+  </section>
+
+  <script>
+    const API_URL = "https://rfmid-cloud-api.onrender.com";
+    const REQUEST_TIMEOUT_MS = 90000; // Render free tier can take a while to wake up
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+    const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+    const input = document.getElementById("imageInput");
+    const preview = document.getElementById("preview");
+    const button = document.getElementById("predictButton");
+    const statusEl = document.getElementById("statusMessage");
+    const resultsPanel = document.getElementById("resultsPanel");
+    const results = document.getElementById("results");
+
+    let selectedFile = null;
+    let previewUrl = null;
+
+    function clearPreview() {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = null;
+      preview.removeAttribute("src");
+      preview.hidden = true;
+    }
+
+    function rejectFile(message) {
+      statusEl.textContent = message;
+      selectedFile = null;
+      button.disabled = true;
+    }
+
+    preview.addEventListener("error", () => {
+      // Only react if we actually tried to load something
+      if (!preview.getAttribute("src")) return;
+      clearPreview();
+      statusEl.textContent =
+        "Could not preview this image. The file may be corrupted.";
+      selectedFile = null;
+      button.disabled = true;
+    });
+
+    input.addEventListener("change", () => {
+      selectedFile = input.files[0] || null;
+      resultsPanel.hidden = true;
+      results.replaceChildren();
+      statusEl.textContent = "";
+      clearPreview();
+
+      if (!selectedFile) {
+        button.disabled = true;
+        return;
+      }
+
+      if (!ALLOWED_TYPES.includes(selectedFile.type)) {
+        rejectFile("Please choose a JPEG, PNG or WebP image.");
+        return;
+      }
+
+      if (selectedFile.size > MAX_FILE_SIZE) {
+        rejectFile("The image must be 10 MB or smaller.");
+        return;
+      }
+
+      previewUrl = URL.createObjectURL(selectedFile);
+      preview.src = previewUrl;
+      preview.hidden = false;
+      button.disabled = false;
+    });
+
+    function renderPredictions(predictions) {
+      for (const item of predictions) {
+        const row = document.createElement("div");
+        row.className = "result";
+
+        const title = document.createElement("strong");
+        title.textContent = item.label;
+
+        const score = document.createElement("div");
+        score.textContent = `Score: ${(item.score * 100).toFixed(2)}%`;
+
+        const bar = document.createElement("div");
+        bar.className = "bar";
+
+        const fill = document.createElement("div");
+        fill.className = "fill";
+        fill.style.width =
+          `${Math.max(0, Math.min(100, item.score * 100))}%`;
+
+        bar.appendChild(fill);
+        row.append(title, score, bar);
+        results.appendChild(row);
+      }
+    }
+
+    button.addEventListener("click", async () => {
+      if (!selectedFile) return;
+
+      button.disabled = true;
+      button.classList.add("loading");
+      statusEl.textContent =
+        "Submitting image. The backend may need to wake up...";
+      resultsPanel.hidden = true;
+      results.replaceChildren();
+
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(`${API_URL}/predict`, {
+          method: "POST",
+          body: formData,
+          signal: controller.signal
+        });
+
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error(
+            `Server returned an invalid response (HTTP ${response.status}).`
+          );
+        }
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Prediction failed.");
+        }
+
+        if (!Array.isArray(data.predictions)) {
+          throw new Error("Unexpected response format from the server.");
+        }
+
+        resultsPanel.hidden = false;
+        renderPredictions(data.predictions);
+
+        statusEl.textContent =
+          "Prediction completed." + (data.notice ? " " + data.notice : "");
+
+      } catch (error) {
+        statusEl.textContent = error.name === "AbortError"
+          ? "The request timed out. The server may still be waking up, so please try again."
+          : "Could not get a prediction: " + error.message;
+      } finally {
+        clearTimeout(timeoutId);
+        button.classList.remove("loading");
+        button.disabled = !selectedFile;
+      }
+    });
+  </script>
+</body>
+</html>
